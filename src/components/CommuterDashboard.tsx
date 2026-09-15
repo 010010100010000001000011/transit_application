@@ -8,6 +8,8 @@ import { usePinMessages } from '@/hooks/usePinMessages';
 import QuickControls from '@/components/QuickControls';
 import CommuterPinInbox from '@/components/CommuterPinInbox';
 import VehicleCard from '@/components/VehicleCard';
+import CommuterCard from '@/components/CommuterCard';
+import { CommuterWithAppearance } from '@/hooks/useRealtimeCommuters';
 import StatsBar from '@/components/StatsBar';
 import ProfileSheet from '@/components/ProfileSheet';
 import MapBottomSheet from '@/components/MapBottomSheet';
@@ -47,7 +49,7 @@ export const CommuterDashboard: React.FC = () => {
 
   const { vehicles } = useRealtimeVehicles();
   const { commuters, refetch: refetchCommuters, removeCommuterOptimistic } = useRealtimeCommuters();
-  const pins = usePinMessages('commuter');
+  const pins = usePinMessages();
 
   const [destination, setDestination] = useState<string>(profile?.destination || '');
   const [isSharing, setIsSharing] = useState(false);
@@ -55,8 +57,9 @@ export const CommuterDashboard: React.FC = () => {
   const [profileOpen, setProfileOpen] = useState(false);
 
 
-  // Detail sheet: selected vehicle
+  // Detail sheets
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
+  const [selectedCommuter, setSelectedCommuter] = useState<CommuterWithAppearance | null>(null);
 
   const mapHandleRef = useRef<TransitMapHandle | null>(null);
   const watchIdRef = useRef<number | null>(null);
@@ -275,6 +278,17 @@ export const CommuterDashboard: React.FC = () => {
     );
   }, []);
 
+  const handleCommuterSelect = useCallback((commuter: any | null) => {
+    setSelectedCommuter(commuter as CommuterWithAppearance | null);
+    if (!commuter || !mapHandleRef.current) return;
+    const cover = Math.round(window.innerHeight * 0.45) + NAV_HEIGHT;
+    mapHandleRef.current.panToSafeCenter(
+      commuter.location.lat,
+      commuter.location.lng,
+      { bottomCoverHeight: cover, zoom: 16 },
+    );
+  }, []);
+
   // ── Peek content (destination pill + sharing status) ───────────────────────
   const peekContent = (
     <div className="h-full flex items-center gap-3">
@@ -360,6 +374,7 @@ export const CommuterDashboard: React.FC = () => {
           selectedDestination={destination || null}
           mapHandle={(h) => (mapHandleRef.current = h)}
           onVehicleSelect={handleVehicleSelect}
+          onCommuterSelect={handleCommuterSelect}
         />
       </div>
 
@@ -407,6 +422,36 @@ export const CommuterDashboard: React.FC = () => {
                 onIntercept={() => {
                   toast.success('Route guidance coming soon.');
                 }}
+              />
+            </div>
+          )}
+        </DrawerContent>
+      </Drawer>
+
+
+      {/* Commuter detail drawer (other waiting commuters) */}
+      <Drawer
+        open={!!selectedCommuter}
+        onOpenChange={(open) => !open && setSelectedCommuter(null)}
+      >
+        <DrawerContent className="rounded-t-2xl border-0 bg-background/95 backdrop-blur-xl max-h-[85vh]">
+          <DrawerHeader className="sr-only">
+            <DrawerTitle>Commuter details</DrawerTitle>
+            <DrawerDescription>{selectedCommuter?.name || ''}</DrawerDescription>
+          </DrawerHeader>
+          <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-muted" />
+          {selectedCommuter && (
+            <div className="px-4 pb-4 pt-2">
+              <div className="flex justify-end mb-1">
+                <DrawerClose asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
+                    <X size={16} />
+                  </Button>
+                </DrawerClose>
+              </div>
+              <CommuterCard
+                commuter={selectedCommuter}
+                onClose={() => setSelectedCommuter(null)}
               />
             </div>
           )}

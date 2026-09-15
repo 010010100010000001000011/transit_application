@@ -136,8 +136,10 @@ export const useRealtimeVehicles = (): UseRealtimeVehiclesReturn => {
     // within 10s max. Supabase SELECTs are lightweight so this does not
     // meaningfully increase load.
     pollingIntervalRef.current = window.setInterval(() => {
-      fetchVehicles();
-    }, 10_000);
+      if (document.visibilityState === 'visible') {
+        fetchVehicles();
+      }
+    }, 15_000);
 
     return () => {
       supabase.removeChannel(channel);

@@ -56,7 +56,7 @@ export const DriverDashboard: React.FC = () => {
   } = useDriverLocation();
   const { vehicles, removeVehicleOptimistic, refetch: refetchVehicles } = useRealtimeVehicles();
   const { commuters, refetch: refetchCommuters } = useRealtimeCommuters();
-  const pins = usePinMessages('driver');
+  const pins = usePinMessages();
 
   const [vehicle, setVehicle] = useState<DriverVehicle | null>(null);
   const [registering, setRegistering] = useState(false);
@@ -91,7 +91,8 @@ export const DriverDashboard: React.FC = () => {
     })();
 
     return () => { cancelled = true; };
-  }, [user, isTracking]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   // ── Optimistically keep latestPosRef up to date from realtime vehicles list
   useEffect(() => {

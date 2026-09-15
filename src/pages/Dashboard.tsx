@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, LogOut, Bus } from 'lucide-react';
@@ -12,8 +12,6 @@ const Dashboard = () => {
   const { user, profile, role, loading, signOut } = useAuth();
   const navigate = useNavigate();
   const [roleTimeout, setRoleTimeout] = useState(false);
-  // Prevent redirect until auth has settled at least once
-  const authSettledRef = useRef(false);
 
   useEffect(() => {
     console.log('[Dashboard]', {
@@ -24,27 +22,19 @@ const Dashboard = () => {
     });
   }, [user, role, loading, profile]);
 
-  // Mark auth as settled the first time loading becomes false
+  // Redirect only after auth finished AND there is truly no user
   useEffect(() => {
-    if (!loading) {
-      authSettledRef.current = true;
-    }
-  }, [loading]);
-
-  // Only redirect unauthenticated users AFTER auth has fully settled.
-  // This prevents the hard-refresh race where loading briefly becomes false
-  // before getSession() restores the user from localStorage.
-  useEffect(() => {
-    if (!loading && authSettledRef.current && !user) {
-      console.log('[Dashboard] No session after auth settled → redirect home');
+    if (!loading && !user) {
+      console.log('[Dashboard] No session → redirect home');
       navigate('/', { replace: true });
     }
   }, [user, loading, navigate]);
 
-  // Safety: if we somehow still have no role after loading finishes, wait then recover.
+  // If role is still null after a few seconds, default is already applied in AuthContext;
+  // this is only a last-resort redirect if something is deeply broken.
   useEffect(() => {
     if (!loading && user && !role) {
-      const timer = setTimeout(() => setRoleTimeout(true), 8000);
+      const timer = setTimeout(() => setRoleTimeout(true), 10000);
       return () => clearTimeout(timer);
     }
     if (role) setRoleTimeout(false);
@@ -52,14 +42,14 @@ const Dashboard = () => {
 
   useEffect(() => {
     if (roleTimeout && !role) {
-      console.warn('[Dashboard] role never resolved, redirecting to /auth');
-      navigate('/auth', { replace: true });
+      console.warn('[Dashboard] role never resolved after 10s');
+      // Don't redirect — AuthContext defaults to 'commuter'. Just log.
     }
-  }, [roleTimeout, role, navigate]);
+  }, [roleTimeout, role]);
 
-  // Keep showing the loader until auth is done OR we have a user.
-  // Never flash the empty state during hard-refresh session restore.
-  if (loading || (!user && !authSettledRef.current)) {
+  // Show loader ONLY while the auth session itself is loading.
+  // Profile/role load in the background and must not block the UI.
+  if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background gap-4">
         <motion.div
@@ -87,6 +77,9 @@ const Dashboard = () => {
     return null;
   }
 
+  // Effective role: never stay on "preparing" forever
+  const effectiveRole = role ?? 'commuter';
+
   return (
     <div
       className="h-screen w-screen relative overflow-hidden bg-background"
@@ -110,7 +103,7 @@ const Dashboard = () => {
                 {profile?.name || 'User'}
               </p>
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                {role || 'Loading...'}
+                {effectiveRole}
               </p>
             </div>
             <Button
@@ -134,18 +127,7 @@ const Dashboard = () => {
         animate={{ opacity: 1 }}
         transition={{ delay: 0.1 }}
       >
-        {role === 'commuter' && <CommuterDashboard />}
-        {role === 'driver' && <DriverDashboard />}
-        {!role && (
-          <div className="flex items-center justify-center h-full bg-background">
-            <div className="flex flex-col items-center gap-3">
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              <span className="text-muted-foreground font-medium">
-                Preparing your dashboard...
-              </span>
-            </div>
-          </div>
-        )}
+        {effectiveRole === 'driver' ? <DriverDashboard /> : <CommuterDashboard />}
       </motion.main>
 
       <div className="relative z-50 pointer-events-auto">

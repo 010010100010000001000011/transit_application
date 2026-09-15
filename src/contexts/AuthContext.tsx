@@ -34,6 +34,22 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+/** Race a promise against a timeout so we never hang the UI forever. */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(fallback);
+      });
+  });
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -41,43 +57,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [role, setRole] = useState<UserRole>(null);
   const [loading, setLoading] = useState(true);
 
-  // Suppress onAuthStateChange overwriting role during signUp
   const signUpInProgressRef = useRef(false);
-  // After first bootstrap, never flip global loading again (prevents hard-refresh / tab-focus flicker)
   const initialLoadDoneRef = useRef(false);
 
   const fetchUserData = async (userId: string) => {
     try {
       console.log('[AuthContext] fetchUserData', { userId });
 
-      // Use maybeSingle() so 0 rows does not throw PGRST116
-      const [profileRes, roleRes] = await Promise.all([
-        supabase.from('profiles').select('*').eq('user_id', userId).maybeSingle(),
-        supabase.from('user_roles').select('role').eq('user_id', userId).maybeSingle(),
-      ]);
+      const profilePromise = supabase
+        .from('profiles')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
 
-      if (profileRes.error) {
-        console.error('[AuthContext] profile fetch error', { userId, error: profileRes.error });
+      const rolePromise = supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      // Never hang more than 4s on profile/role fetches
+      const [profileRes, roleRes] = await withTimeout(
+        Promise.all([profilePromise, rolePromise]),
+        4000,
+        [
+          { data: null, error: { message: 'timeout' } },
+          { data: null, error: { message: 'timeout' } },
+        ] as any
+      );
+
+      if (profileRes?.error) {
+        console.error('[AuthContext] profile fetch error', profileRes.error);
       }
-      if (profileRes.data) {
+      if (profileRes?.data) {
         setProfile(profileRes.data as Profile);
       }
 
-      if (roleRes.error) {
-        console.error('[AuthContext] role fetch error', { userId, error: roleRes.error });
+      if (roleRes?.error) {
+        console.error('[AuthContext] role fetch error', roleRes.error);
       }
 
-      if (roleRes.data?.role) {
+      if (roleRes?.data?.role) {
         console.log('[AuthContext] roleData', roleRes.data);
         setRole(roleRes.data.role as UserRole);
       } else {
-        // Never leave role as null — prevents endless "Preparing dashboard..."
         console.warn('[AuthContext] no role found, defaulting to commuter', { userId });
         setRole('commuter');
       }
     } catch (error) {
       console.error('[AuthContext] fetchUserData unexpected error', error);
-      // Safety net so UI is never stuck without a role
       setRole((prev) => prev ?? 'commuter');
     }
   };
@@ -89,7 +117,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const {
           data: { session: initialSession },
-        } = await supabase.auth.getSession();
+        } = await withTimeout(
+          supabase.auth.getSession(),
+          5000,
+          { data: { session: null } } as any
+        );
 
         console.log('[AuthContext] initial session', {
           hasSession: !!initialSession,
@@ -101,12 +133,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setSession(initialSession);
         setUser(initialSession?.user ?? null);
 
+        // CRITICAL: clear loading as soon as we know the session.
+        // Do NOT await profile/role — that was causing endless "Loading dashboard...".
+        setLoading(false);
+        initialLoadDoneRef.current = true;
+
+        // Fetch profile + role in the background
         if (initialSession?.user) {
-          await fetchUserData(initialSession.user.id);
+          fetchUserData(initialSession.user.id).catch(() => {
+            setRole((prev) => prev ?? 'commuter');
+          });
         }
       } catch (err) {
         console.error('[AuthContext] initializeAuth error', err);
-      } finally {
         if (mounted) {
           setLoading(false);
           initialLoadDoneRef.current = true;
@@ -123,13 +162,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (!mounted) return;
 
-      // TOKEN_REFRESHED fires on tab focus / token rotation.
-      // Update session silently — never touch loading or clear role/profile.
+      // Token refresh: silent update, never touch loading
       if (event === 'TOKEN_REFRESHED') {
         if (newSession) {
           setSession(newSession);
           setUser(newSession.user ?? null);
-          // Refresh profile/role in background only; do not flip loading
           if (newSession.user) {
             fetchUserData(newSession.user.id).catch(() => {});
           }
@@ -153,26 +190,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (newSession?.user) {
         if (signUpInProgressRef.current) return;
 
-        // Only show full-page loader on a real first-time sign-in
-        // before the initial bootstrap finished. After that, refresh in background.
+        // Only show loader on a true first sign-in before bootstrap finished
         const shouldShowLoading =
-          (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') &&
-          !initialLoadDoneRef.current;
+          event === 'SIGNED_IN' && !initialLoadDoneRef.current;
 
         if (shouldShowLoading) setLoading(true);
 
-        try {
-          await fetchUserData(newSession.user.id);
-        } finally {
-          if (shouldShowLoading && mounted) setLoading(false);
-          // Mark bootstrap done if this was the first meaningful event
-          if (!initialLoadDoneRef.current) {
-            initialLoadDoneRef.current = true;
-            if (mounted) setLoading(false);
-          }
+        // Clear loading immediately once we have a user; fetch data in background
+        if (shouldShowLoading) {
+          setLoading(false);
         }
+        if (!initialLoadDoneRef.current) {
+          initialLoadDoneRef.current = true;
+          setLoading(false);
+        }
+
+        fetchUserData(newSession.user.id).catch(() => {
+          setRole((prev) => prev ?? 'commuter');
+        });
       } else if (!initialLoadDoneRef.current) {
-        // Only clear state during the very first load if there is truly no session
         setProfile(null);
         setRole(null);
         setLoading(false);
@@ -226,7 +262,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { error: roleError };
       }
 
-      // Set state directly so dashboard has role immediately
       setProfile({
         id: '',
         user_id: data.user.id,

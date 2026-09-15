@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, LogOut, Bus } from 'lucide-react';
@@ -12,6 +12,8 @@ const Dashboard = () => {
   const { user, profile, role, loading, signOut } = useAuth();
   const navigate = useNavigate();
   const [roleTimeout, setRoleTimeout] = useState(false);
+  // Prevent redirect until auth has settled at least once
+  const authSettledRef = useRef(false);
 
   useEffect(() => {
     console.log('[Dashboard]', {
@@ -22,33 +24,42 @@ const Dashboard = () => {
     });
   }, [user, role, loading, profile]);
 
-  // Redirect unauthenticated users once auth has finished loading
+  // Mark auth as settled the first time loading becomes false
   useEffect(() => {
-    if (!loading && !user) {
-      navigate('/');
+    if (!loading) {
+      authSettledRef.current = true;
+    }
+  }, [loading]);
+
+  // Only redirect unauthenticated users AFTER auth has fully settled.
+  // This prevents the hard-refresh race where loading briefly becomes false
+  // before getSession() restores the user from localStorage.
+  useEffect(() => {
+    if (!loading && authSettledRef.current && !user) {
+      console.log('[Dashboard] No session after auth settled → redirect home');
+      navigate('/', { replace: true });
     }
   }, [user, loading, navigate]);
 
-  // Safety: if we somehow still have no role after loading finishes, wait a bit then recover.
-  // AuthContext already defaults to 'commuter', so this should rarely fire.
+  // Safety: if we somehow still have no role after loading finishes, wait then recover.
   useEffect(() => {
     if (!loading && user && !role) {
       const timer = setTimeout(() => setRoleTimeout(true), 8000);
       return () => clearTimeout(timer);
     }
-    // Reset timeout flag if role arrives
     if (role) setRoleTimeout(false);
   }, [loading, user, role]);
 
   useEffect(() => {
     if (roleTimeout && !role) {
-      // Soft recovery: go to auth so user can re-login cleanly
       console.warn('[Dashboard] role never resolved, redirecting to /auth');
-      navigate('/auth');
+      navigate('/auth', { replace: true });
     }
   }, [roleTimeout, role, navigate]);
 
-  if (loading) {
+  // Keep showing the loader until auth is done OR we have a user.
+  // Never flash the empty state during hard-refresh session restore.
+  if (loading || (!user && !authSettledRef.current)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background gap-4">
         <motion.div
@@ -81,7 +92,6 @@ const Dashboard = () => {
       className="h-screen w-screen relative overflow-hidden bg-background"
       style={{ height: '100dvh' }}
     >
-      {/* Floating Header Overlay */}
       <motion.header
         className="absolute top-0 left-0 right-0 px-4 py-3 bg-gradient-to-b from-background/90 via-background/50 to-transparent z-40 pointer-events-none"
         initial={{ opacity: 0, y: -10 }}
@@ -118,7 +128,6 @@ const Dashboard = () => {
         </div>
       </motion.header>
 
-      {/* Dashboard based on role */}
       <motion.main
         className="absolute inset-0 z-0"
         initial={{ opacity: 0 }}

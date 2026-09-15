@@ -1,38 +1,30 @@
-# Hard-refresh + endless loading fixes
+# Hard-refresh + routing fixes (v2)
 
-## What was broken
+## Server routing
+`vercel.json` rewrites all routes to `index.html` so `/dashboard` no longer 404s.
 
-1. **No `vercel.json`** → hard refresh on `/dashboard` returned Vercel 404 (React never loaded).
-2. **AuthContext** set `loading = true` on *every* `onAuthStateChange` event (including TOKEN_REFRESHED / INITIAL_SESSION after hard refresh). If the subsequent profile/role fetch was slow or failed, the UI stayed on the loader forever.
-3. **Service Worker** cached Supabase API responses for 24h → stale/broken auth data after refresh.
-4. **`.single()`** on profile/role/vehicle queries threw when 0 rows (PGRST116), contributing to failed fetches.
-5. Role could remain `null` → Dashboard showed "Preparing your dashboard..." indefinitely.
+## Client race on hard refresh
+Dashboard used to redirect to `/` as soon as `loading === false && !user`.
+On hard refresh there is a brief window where loading finishes before the
+session is restored from localStorage → user gets kicked to the home page.
 
-## Files changed
+Fix: wait until auth has fully settled before redirecting unauthenticated users,
+and keep the loader visible until then.
 
-| File | Change |
-|------|--------|
-| `vercel.json` | **NEW** – SPA rewrites so `/dashboard` (and all routes) serve `index.html` |
-| `vite.config.ts` | Removed Supabase runtime caching from Workbox; PWA still works for install |
-| `src/main.tsx` | Unregisters old service workers + clears stale caches on boot |
-| `src/contexts/AuthContext.tsx` | Hard-refresh safe: TOKEN_REFRESHED never flips loading; `maybeSingle`; always default role; `initialLoadDoneRef` |
-| `src/pages/Dashboard.tsx` | Longer safety timeout; clearer logging |
-| `src/integrations/supabase/client.ts` | Safer missing-env handling |
-| `src/components/ProfileSheet.tsx` | `.single()` → `.maybeSingle()` for vehicle load |
+## Service Worker
+Old SW cached Supabase API. New config removes that. `main.tsx` unregisters
+any leftover workers and clears workbox/supabase caches on boot.
 
-## How to deploy
+## Deploy
+1. Copy all files from this folder into your repo (same paths).
+2. git add + commit + push
+3. Vercel → Redeploy (disable build cache)
+4. In Chrome DevTools → Application:
+   - Service Workers → Unregister ALL
+   - Cache Storage → Delete all
+   - Application → Storage → Clear site data
+5. Close the tab, open a fresh one, log in, hard-refresh on /dashboard
 
-1. Copy these files into your repo root (overwrite existing).
-2. Commit and push to `main`.
-3. In Vercel → Redeploy **with build cache disabled**.
-4. On your browser: DevTools → Application → Service Workers → Unregister all, then clear Cache Storage.
-5. Hard refresh `/dashboard` – it should restore correctly.
-
-## Vercel env vars (must exist)
-
-```
-VITE_SUPABASE_URL=https://kaciptxhzvpahvjzkadl.supabase.co
-VITE_SUPABASE_ANON_KEY=<your anon key>
-```
-
-After changing env vars, always Redeploy.
+## Env vars on Vercel
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY

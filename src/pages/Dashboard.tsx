@@ -14,28 +14,39 @@ const Dashboard = () => {
   const [roleTimeout, setRoleTimeout] = useState(false);
 
   useEffect(() => {
-    console.log('[Dashboard]', { userId: user?.id, role, loading, hasProfile: !!profile });
-  }, [user, role, loading]);
+    console.log('[Dashboard]', {
+      userId: user?.id,
+      role,
+      loading,
+      hasProfile: !!profile,
+    });
+  }, [user, role, loading, profile]);
 
+  // Redirect unauthenticated users once auth has finished loading
   useEffect(() => {
     if (!loading && !user) {
       navigate('/');
     }
   }, [user, loading, navigate]);
 
-  // If user is loaded but role never arrives after 5s, send back to auth
+  // Safety: if we somehow still have no role after loading finishes, wait a bit then recover.
+  // AuthContext already defaults to 'commuter', so this should rarely fire.
   useEffect(() => {
     if (!loading && user && !role) {
-      const timer = setTimeout(() => setRoleTimeout(true), 5000);
+      const timer = setTimeout(() => setRoleTimeout(true), 8000);
       return () => clearTimeout(timer);
     }
+    // Reset timeout flag if role arrives
+    if (role) setRoleTimeout(false);
   }, [loading, user, role]);
 
   useEffect(() => {
-    if (roleTimeout) {
+    if (roleTimeout && !role) {
+      // Soft recovery: go to auth so user can re-login cleanly
+      console.warn('[Dashboard] role never resolved, redirecting to /auth');
       navigate('/auth');
     }
-  }, [roleTimeout, navigate]);
+  }, [roleTimeout, role, navigate]);
 
   if (loading) {
     return (
@@ -66,8 +77,10 @@ const Dashboard = () => {
   }
 
   return (
-    <div className="h-screen w-screen relative overflow-hidden bg-background"
-         style={{ height: '100dvh' }}>
+    <div
+      className="h-screen w-screen relative overflow-hidden bg-background"
+      style={{ height: '100dvh' }}
+    >
       {/* Floating Header Overlay */}
       <motion.header
         className="absolute top-0 left-0 right-0 px-4 py-3 bg-gradient-to-b from-background/90 via-background/50 to-transparent z-40 pointer-events-none"
@@ -80,15 +93,19 @@ const Dashboard = () => {
               <Bus className="h-6 w-6 text-primary-foreground" />
             </div>
           </div>
-          
+
           <div className="flex items-center gap-3 bg-card/90 backdrop-blur-md px-4 py-2 rounded-full border border-border shadow-sm">
             <div className="text-right hidden sm:block">
-              <p className="text-sm font-bold truncate max-w-[120px]">{profile?.name || 'User'}</p>
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{role || 'Loading...'}</p>
+              <p className="text-sm font-bold truncate max-w-[120px]">
+                {profile?.name || 'User'}
+              </p>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {role || 'Loading...'}
+              </p>
             </div>
-            <Button 
-              variant="ghost" 
-              size="icon" 
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={async () => {
                 await signOut();
                 navigate('/');
@@ -114,7 +131,9 @@ const Dashboard = () => {
           <div className="flex items-center justify-center h-full bg-background">
             <div className="flex flex-col items-center gap-3">
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              <span className="text-muted-foreground font-medium">Preparing your dashboard...</span>
+              <span className="text-muted-foreground font-medium">
+                Preparing your dashboard...
+              </span>
             </div>
           </div>
         )}

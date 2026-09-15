@@ -91,7 +91,7 @@ export const ProfileSheet: React.FC<ProfileSheetProps> = ({ open, onOpenChange }
         .from('vehicles')
         .select('*')
         .eq('driver_id', user.id)
-        .single();
+        .maybeSingle();
 
       if (data) {
         setVehicle(data as DriverVehicle);

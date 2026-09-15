@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -20,7 +20,13 @@ interface AuthContextType {
   profile: Profile | null;
   role: UserRole;
   loading: boolean;
-  signUp: (email: string, password: string, name: string, role: 'commuter' | 'driver', appearanceDetails?: { shirtColor?: string; trouserColor?: string }) => Promise<{ error: Error | null }>;
+  signUp: (
+    email: string,
+    password: string,
+    name: string,
+    role: 'commuter' | 'driver',
+    appearanceDetails?: { shirtColor?: string; trouserColor?: string }
+  ) => Promise<{ error: Error | null }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   updateProfile: (updates: Partial<Profile>) => Promise<{ error: Error | null }>;
@@ -34,88 +40,150 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [profile, setProfile] = useState<Profile | null>(null);
   const [role, setRole] = useState<UserRole>(null);
   const [loading, setLoading] = useState(true);
-  // Flag to suppress onAuthStateChange overwriting role during signUp
-  const signUpInProgressRef = React.useRef(false);
+
+  // Suppress onAuthStateChange overwriting role during signUp
+  const signUpInProgressRef = useRef(false);
+  // After first bootstrap, never flip global loading again (prevents hard-refresh / tab-focus flicker)
+  const initialLoadDoneRef = useRef(false);
 
   const fetchUserData = async (userId: string) => {
     try {
       console.log('[AuthContext] fetchUserData', { userId });
 
-      // Fetch profile
-      const { data: profileData, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('user_id', userId)
-        .single();
+      // Use maybeSingle() so 0 rows does not throw PGRST116
+      const [profileRes, roleRes] = await Promise.all([
+        supabase.from('profiles').select('*').eq('user_id', userId).maybeSingle(),
+        supabase.from('user_roles').select('role').eq('user_id', userId).maybeSingle(),
+      ]);
 
-      if (profileError) {
-        console.error('[AuthContext] profile fetch error', { userId, profileError });
+      if (profileRes.error) {
+        console.error('[AuthContext] profile fetch error', { userId, error: profileRes.error });
+      }
+      if (profileRes.data) {
+        setProfile(profileRes.data as Profile);
       }
 
-      if (profileData) {
-        setProfile(profileData as Profile);
+      if (roleRes.error) {
+        console.error('[AuthContext] role fetch error', { userId, error: roleRes.error });
       }
 
-      // Fetch role
-      const { data: roleData, error: roleError } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', userId)
-        .single();
-
-      if (roleError) {
-        console.error('[AuthContext] role fetch error', { userId, roleError });
-      }
-
-      if (roleData) {
-        console.log('[AuthContext] roleData', roleData);
-        setRole(roleData.role as UserRole);
+      if (roleRes.data?.role) {
+        console.log('[AuthContext] roleData', roleRes.data);
+        setRole(roleRes.data.role as UserRole);
       } else {
-        console.warn('[AuthContext] no roleData found', { userId });
+        // Never leave role as null — prevents endless "Preparing dashboard..."
+        console.warn('[AuthContext] no role found, defaulting to commuter', { userId });
         setRole('commuter');
       }
     } catch (error) {
-      console.error('Error fetching user data:', error);
+      console.error('[AuthContext] fetchUserData unexpected error', error);
+      // Safety net so UI is never stuck without a role
+      setRole((prev) => prev ?? 'commuter');
     }
   };
 
   useEffect(() => {
+    let mounted = true;
+
     const initializeAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      console.log('[AuthContext] initial session', { hasSession: !!session, userId: session?.user?.id });
-      setSession(session);
-      setUser(session?.user ?? null);
-      
-      if (session?.user) {
-        await fetchUserData(session.user.id);
+      try {
+        const {
+          data: { session: initialSession },
+        } = await supabase.auth.getSession();
+
+        console.log('[AuthContext] initial session', {
+          hasSession: !!initialSession,
+          userId: initialSession?.user?.id,
+        });
+
+        if (!mounted) return;
+
+        setSession(initialSession);
+        setUser(initialSession?.user ?? null);
+
+        if (initialSession?.user) {
+          await fetchUserData(initialSession.user.id);
+        }
+      } catch (err) {
+        console.error('[AuthContext] initializeAuth error', err);
+      } finally {
+        if (mounted) {
+          setLoading(false);
+          initialLoadDoneRef.current = true;
+        }
       }
-      setLoading(false);
     };
 
     initializeAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      console.log('[AuthContext] onAuthStateChange', { event, hasSession: !!newSession });
 
-        if (session?.user) {
-          // If signUp() is currently in progress, it will set role/profile
-          // directly after the DB writes — don't race against it here.
-          if (signUpInProgressRef.current) return;
+      if (!mounted) return;
 
-          setLoading(true);
-          await fetchUserData(session.user.id);
-          setLoading(false);
-        } else {
-          setProfile(null);
-          setRole(null);
-          setLoading(false);
+      // TOKEN_REFRESHED fires on tab focus / token rotation.
+      // Update session silently — never touch loading or clear role/profile.
+      if (event === 'TOKEN_REFRESHED') {
+        if (newSession) {
+          setSession(newSession);
+          setUser(newSession.user ?? null);
+          // Refresh profile/role in background only; do not flip loading
+          if (newSession.user) {
+            fetchUserData(newSession.user.id).catch(() => {});
+          }
         }
+        return;
       }
-    );
 
-    return () => subscription.unsubscribe();
+      if (event === 'SIGNED_OUT') {
+        setSession(null);
+        setUser(null);
+        setProfile(null);
+        setRole(null);
+        setLoading(false);
+        return;
+      }
+
+      // INITIAL_SESSION / SIGNED_IN / USER_UPDATED
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
+
+      if (newSession?.user) {
+        if (signUpInProgressRef.current) return;
+
+        // Only show full-page loader on a real first-time sign-in
+        // before the initial bootstrap finished. After that, refresh in background.
+        const shouldShowLoading =
+          (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') &&
+          !initialLoadDoneRef.current;
+
+        if (shouldShowLoading) setLoading(true);
+
+        try {
+          await fetchUserData(newSession.user.id);
+        } finally {
+          if (shouldShowLoading && mounted) setLoading(false);
+          // Mark bootstrap done if this was the first meaningful event
+          if (!initialLoadDoneRef.current) {
+            initialLoadDoneRef.current = true;
+            if (mounted) setLoading(false);
+          }
+        }
+      } else if (!initialLoadDoneRef.current) {
+        // Only clear state during the very first load if there is truly no session
+        setProfile(null);
+        setRole(null);
+        setLoading(false);
+        initialLoadDoneRef.current = true;
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signUp = async (
@@ -125,7 +193,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     userRole: 'commuter' | 'driver',
     appearanceDetails?: { shirtColor?: string; trouserColor?: string }
   ) => {
-    // Block onAuthStateChange from racing against our DB writes
     signUpInProgressRef.current = true;
 
     const { data, error } = await supabase.auth.signUp({ email, password });
@@ -136,7 +203,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     if (data.user) {
-      // Write profile
       const { error: profileError } = await supabase.from('profiles').insert({
         user_id: data.user.id,
         name,
@@ -150,7 +216,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { error: profileError };
       }
 
-      // Write role
       const { error: roleError } = await supabase.from('user_roles').insert({
         user_id: data.user.id,
         role: userRole,
@@ -161,7 +226,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { error: roleError };
       }
 
-      // Both rows written — set state directly, no need to re-fetch
+      // Set state directly so dashboard has role immediately
       setProfile({
         id: '',
         user_id: data.user.id,
@@ -173,6 +238,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setRole(userRole);
       setUser(data.user);
       setSession(data.session);
+      setLoading(false);
+      initialLoadDoneRef.current = true;
     }
 
     signUpInProgressRef.current = false;
@@ -193,6 +260,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSession(null);
     setProfile(null);
     setRole(null);
+    setLoading(false);
   };
 
   const updateProfile = async (updates: Partial<Profile>) => {

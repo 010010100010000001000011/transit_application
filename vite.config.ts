@@ -16,9 +16,11 @@ export default defineConfig(({ mode }) => ({
   plugins: [
     react(),
     mode === "development" && componentTagger(),
+    // PWA kept for installability, but NO runtime caching of Supabase API.
+    // Caching auth/REST responses was the main cause of endless loading after hard refresh.
     VitePWA({
-      registerType: "autoUpdate",
-      includeAssets: ["favicon.ico", "robots.txt"],
+      registerType: "prompt",
+      includeAssets: ["favicon.ico", "robots.txt", "pwa-192x192.png", "pwa-512x512.png"],
       manifest: {
         name: "TRANSIT - Zambia Transport",
         short_name: "TRANSIT",
@@ -49,20 +51,12 @@ export default defineConfig(({ mode }) => ({
         ],
       },
       workbox: {
+        // Only precache static assets — never API responses
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/.*\.supabase\.co\/.*/i,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "supabase-cache",
-              expiration: {
-                maxEntries: 50,
-                maxAgeSeconds: 60 * 60 * 24,
-              },
-            },
-          },
-        ],
+        // Explicitly do NOT register any runtime caching for supabase.co
+        runtimeCaching: [],
+        navigateFallback: "/index.html",
+        navigateFallbackDenylist: [/^\/api/],
       },
     }),
   ].filter(Boolean),

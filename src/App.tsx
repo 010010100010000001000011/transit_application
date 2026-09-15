@@ -23,11 +23,11 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Home />} />
-            <Route path="/About" element={<About />} />
-            <Route path="/Profile" element={<Profile />} />
-            <Route path="/Dashboard" element={<Dashboard />} />
-            <Route path="/Auth" element={<Auth />} />
-            <Route path="/GPSDiagnostic" element={<GPSDiagnosticPage />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/auth" element={<Auth />} />
+            <Route path="/gps-diagnostic" element={<GPSDiagnosticPage />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

@@ -474,94 +474,85 @@ export const TransitMap: React.FC<TransitMapProps> = ({
 
     const currentMarkerIds = new Set<string>();
 
-    // BOTH roles see active vehicles and active commuters.
-    // Commuters get full vehicle icons (tappable for details).
-    // Drivers get full commuter icons (tappable) + smaller vehicle dots for context.
+    if (role === 'commuter') {
+      filteredVehicles.forEach((vehicle) => {
+        const markerId = `vehicle-${vehicle.id}`;
+        currentMarkerIds.add(markerId);
 
-    // ── Vehicles ────────────────────────────────────────────────────────────
-    filteredVehicles.forEach((vehicle) => {
-      // Commuter role: full vehicle icons, high z-index, tappable → VehicleCard
-      // Driver role: small dots only (context), not tappable
-      const useFullIcon = role === 'commuter';
-      const markerId = useFullIcon ? `vehicle-${vehicle.id}` : `small-vehicle-${vehicle.id}`;
-      currentMarkerIds.add(markerId);
+        const isSelected = selectedVehicle?.id === vehicle.id;
+        const isTracked = trackedVehicleId === vehicle.id;
+        const lv = vehicleLiveness(vehicle);
+        const newLat = vehicle.currentLocation.lat;
+        const newLng = vehicle.currentLocation.lng;
+        const existingMarker = markersRef.current.get(markerId);
 
-      const isSelected = selectedVehicle?.id === vehicle.id;
-      const isTracked = trackedVehicleId === vehicle.id;
-      const lv = vehicleLiveness(vehicle);
-      const newLat = vehicle.currentLocation.lat;
-      const newLng = vehicle.currentLocation.lng;
-      const existingMarker = markersRef.current.get(markerId);
+        if (existingMarker) {
+          animateMarker(markerId, existingMarker, newLat, newLng);
+          existingMarker.setIcon(createVehicleIcon(vehicle, isSelected, isTracked, lv));
+        } else {
+          const marker = L.marker([newLat, newLng], {
+            icon: createVehicleIcon(vehicle, isSelected, isTracked, lv),
+          })
+            .addTo(mapRef.current!)
+            .on('click', () => {
+              setSelectedVehicle(vehicle);
+              setSelectedCommuter(null);
+              setTrackedVehicleId(null);
+              onVehicleSelect?.(vehicle);
+            });
+          markersRef.current.set(markerId, marker);
+        }
+      });
+    }
 
-      const icon = useFullIcon
-        ? createVehicleIcon(vehicle, isSelected, isTracked, lv)
-        : createSmallVehicleIcon(lv);
+    if (role === 'driver') {
+      filteredCommuters.forEach((commuter) => {
+        const markerId = `commuter-${commuter.id}`;
+        currentMarkerIds.add(markerId);
 
-      // Prefer vehicle hits when a commuter pin is nearby (commuter map)
-      const zIndexOffset = useFullIcon ? 1000 : 100;
+        const isSelected = selectedCommuter?.id === commuter.id;
+        const lv = commuterLiveness(commuter);
+        const newLat = commuter.location.lat;
+        const newLng = commuter.location.lng;
+        const existingMarker = markersRef.current.get(markerId);
 
-      const bindVehicleClick = (marker: L.Marker) => {
-        marker.off('click');
-        if (!useFullIcon) return;
-        marker.on('click', () => {
-          setSelectedVehicle(vehicle);
-          setSelectedCommuter(null);
-          setTrackedVehicleId(null);
-          onVehicleSelect?.(vehicle);
-        });
-      };
+        if (existingMarker) {
+          animateMarker(markerId, existingMarker, newLat, newLng);
+          existingMarker.setIcon(createCommuterIcon(commuter, isSelected, lv));
+        } else {
+          const marker = L.marker([newLat, newLng], {
+            icon: createCommuterIcon(commuter, isSelected, lv),
+          })
+            .addTo(mapRef.current!)
+            .on('click', () => {
+              setSelectedCommuter(commuter);
+              setSelectedVehicle(null);
+              onCommuterSelect?.(commuter);
+            });
+          markersRef.current.set(markerId, marker);
+        }
+      });
 
-      if (existingMarker) {
-        animateMarker(markerId, existingMarker, newLat, newLng);
-        existingMarker.setIcon(icon);
-        existingMarker.setZIndexOffset(zIndexOffset);
-        bindVehicleClick(existingMarker);
-      } else {
-        const marker = L.marker([newLat, newLng], { icon, zIndexOffset }).addTo(mapRef.current!);
-        bindVehicleClick(marker);
-        markersRef.current.set(markerId, marker);
-      }
-    });
+      filteredVehicles.forEach((vehicle) => {
+        const markerId = `small-vehicle-${vehicle.id}`;
+        currentMarkerIds.add(markerId);
 
-    // Commuters:
-    // Driver role → full icons, high z-index, tappable → CommuterCard
-    // Commuter role → visible for context but NOT tappable (prevents opening
-    // CommuterCard when the user meant to tap a nearby vehicle / driver)
-    filteredCommuters.forEach((commuter) => {
-      const markerId = `commuter-${commuter.id}`;
-      currentMarkerIds.add(markerId);
+        const lv = vehicleLiveness(vehicle);
+        const newLat = vehicle.currentLocation.lat;
+        const newLng = vehicle.currentLocation.lng;
+        const existingMarker = markersRef.current.get(markerId);
 
-      const isSelected = selectedCommuter?.id === commuter.id;
-      const lv = commuterLiveness(commuter);
-      const newLat = commuter.location.lat;
-      const newLng = commuter.location.lng;
-      const existingMarker = markersRef.current.get(markerId);
-      const icon = createCommuterIcon(commuter, isSelected, lv);
-
-      const commuterInteractive = role === 'driver';
-      const zIndexOffset = commuterInteractive ? 1000 : 200;
-
-      const bindCommuterClick = (marker: L.Marker) => {
-        marker.off('click');
-        if (!commuterInteractive) return;
-        marker.on('click', () => {
-          setSelectedCommuter(commuter);
-          setSelectedVehicle(null);
-          onCommuterSelect?.(commuter);
-        });
-      };
-
-      if (existingMarker) {
-        animateMarker(markerId, existingMarker, newLat, newLng);
-        existingMarker.setIcon(icon);
-        existingMarker.setZIndexOffset(zIndexOffset);
-        bindCommuterClick(existingMarker);
-      } else {
-        const marker = L.marker([newLat, newLng], { icon, zIndexOffset }).addTo(mapRef.current!);
-        bindCommuterClick(marker);
-        markersRef.current.set(markerId, marker);
-      }
-    });
+        if (existingMarker) {
+          animateMarker(markerId, existingMarker, newLat, newLng);
+          existingMarker.setIcon(createSmallVehicleIcon(lv));
+        } else {
+          const marker = L.marker([newLat, newLng], {
+            icon: createSmallVehicleIcon(lv),
+          }).addTo(mapRef.current!);
+          markersRef.current.set(markerId, marker);
+        }
+      });
+    }
 
     // Remove stale markers
     markersRef.current.forEach((marker, id) => {
@@ -582,8 +573,6 @@ export const TransitMap: React.FC<TransitMapProps> = ({
     selectedVehicle,
     selectedCommuter,
     trackedVehicleId,
-    onVehicleSelect,
-    onCommuterSelect,
   ]);
 
   // Keep selected vehicle data fresh
@@ -652,14 +641,27 @@ export const TransitMap: React.FC<TransitMapProps> = ({
         animate={{ opacity: 1, x: 0 }}
       >
         <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-xs">
-          <div className="flex items-center gap-1.5">
-            <div className="h-3 w-3 rounded-full bg-status-available" />
-            <span>Vehicles</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="h-3 w-3 rounded-full bg-accent" style={{ background: '#f97316' }} />
-            <span>Commuters</span>
-          </div>
+          {role === 'commuter' ? (
+            <>
+              <div className="flex items-center gap-1.5">
+                <div className="h-3 w-3 rounded-full bg-status-available" />
+                <span>Available</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="h-3 w-3 rounded-full bg-status-few-seats" />
+                <span>Few seats</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="h-3 w-3 rounded-full bg-status-full" />
+                <span>Full</span>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <div className="h-3 w-3 rounded-full bg-accent" />
+              <span>Commuters waiting</span>
+            </div>
+          )}
         </div>
       </motion.div>
 

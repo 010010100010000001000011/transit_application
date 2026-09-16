@@ -5,8 +5,8 @@ import { Commuter } from '@/types/transit';
 interface DbCommuterLocation {
   id: string;
   user_id: string;
-  current_lat: number | null;
-  current_lng: number | null;
+  current_lat: number;
+  current_lng: number;
   destination: string | null;
   is_active: boolean;
   updated_at: string;
@@ -29,6 +29,12 @@ export interface UseRealtimeCommutersReturn {
   commuters: CommuterWithAppearance[];
   loading: boolean;
   refetch: () => Promise<void>;
+  /**
+   * Optimistically remove a commuter from the local state.
+   * Accepts either the location-row `id` or the underlying `user_id`.
+   * Use this BEFORE awaiting the DB round-trip when the local user stops
+   * sharing location — provides instant visual feedback.
+   */
   removeCommuterOptimistic: (idOrUserId: string) => void;
 }
 
@@ -36,86 +42,64 @@ export const useRealtimeCommuters = (): UseRealtimeCommutersReturn => {
   const [commuters, setCommuters] = useState<CommuterWithAppearance[]>([]);
   const [loading, setLoading] = useState(true);
   const pollingIntervalRef = useRef<number | null>(null);
-  const fetchingRef = useRef(false);
 
   const fetchCommuters = useCallback(async () => {
-    if (fetchingRef.current) return;
-    fetchingRef.current = true;
-    try {
-      const { data: locations, error: locError } = await supabase
-        .from('commuter_locations')
-        .select('*')
-        .eq('is_active', true);
+    const { data: locations, error: locError } = await supabase
+      .from('commuter_locations')
+      .select('*')
+      .eq('is_active', true);
 
-      if (locError) {
-        console.error('Error fetching commuter locations:', locError);
-        setLoading(false);
-        return;
-      }
-
-      // Only keep rows with real coordinates
-      const active = ((locations || []) as DbCommuterLocation[]).filter(
-        (loc) =>
-          loc.is_active &&
-          loc.current_lat != null &&
-          loc.current_lng != null &&
-          Number.isFinite(loc.current_lat) &&
-          Number.isFinite(loc.current_lng)
-      );
-
-      if (active.length === 0) {
-        setCommuters([]);
-        setLoading(false);
-        return;
-      }
-
-      const userIds = active.map((loc) => loc.user_id);
-      const { data: profiles, error: profileError } = await supabase
-        .from('profiles')
-        .select('user_id, name, shirt_color, trouser_color')
-        .in('user_id', userIds);
-
-      if (profileError) {
-        console.error('Error fetching profiles:', profileError);
-      }
-
-      const profileMap = new Map(
-        (profiles || []).map((p) => [p.user_id, p as DbProfile])
-      );
-
-      const mapped: CommuterWithAppearance[] = active.map((loc) => {
-        const profile = profileMap.get(loc.user_id);
-        const updatedAt = new Date(loc.updated_at);
-        const waitingMinutes = Math.max(
-          0,
-          Math.floor((Date.now() - updatedAt.getTime()) / 60000)
-        );
-
-        return {
-          id: loc.id,
-          userId: loc.user_id,
-          name: profile?.name || 'Commuter',
-          location: {
-            lat: loc.current_lat as number,
-            lng: loc.current_lng as number,
-          },
-          destination: loc.destination || 'Unknown',
-          waitingTime: waitingMinutes,
-          shirtColor: profile?.shirt_color || undefined,
-          trouserColor: profile?.trouser_color || undefined,
-        };
-      });
-
-      setCommuters(mapped);
+    if (locError) {
+      console.error('Error fetching commuter locations:', locError);
       setLoading(false);
-    } finally {
-      fetchingRef.current = false;
+      return;
     }
+
+    if (!locations || locations.length === 0) {
+      setCommuters([]);
+      setLoading(false);
+      return;
+    }
+
+    const userIds = locations.map((loc) => loc.user_id);
+    const { data: profiles, error: profileError } = await supabase
+      .from('profiles')
+      .select('user_id, name, shirt_color, trouser_color')
+      .in('user_id', userIds);
+
+    if (profileError) {
+      console.error('Error fetching profiles:', profileError);
+    }
+
+    const profileMap = new Map(profiles?.map((p) => [p.user_id, p]) || []);
+
+    const mapped: CommuterWithAppearance[] = (locations as DbCommuterLocation[]).map((loc) => {
+      const profile = profileMap.get(loc.user_id) as DbProfile | undefined;
+      const updatedAt = new Date(loc.updated_at);
+      const waitingMinutes = Math.floor((Date.now() - updatedAt.getTime()) / 60000);
+
+      return {
+        id: loc.id,
+        userId: loc.user_id,
+        name: profile?.name || 'Commuter',
+        location: {
+          lat: loc.current_lat,
+          lng: loc.current_lng,
+        },
+        destination: loc.destination || 'Unknown',
+        waitingTime: waitingMinutes,
+        shirtColor: profile?.shirt_color || undefined,
+        trouserColor: profile?.trouser_color || undefined,
+      };
+    });
+
+    setCommuters(mapped);
+    setLoading(false);
   }, []);
 
   const removeCommuterOptimistic = useCallback((idOrUserId: string) => {
     setCommuters((prev) =>
-      prev.filter((c) => c.id !== idOrUserId && c.userId !== idOrUserId)
+      prev.filter((c) => c.id !== idOrUserId && c.userId !== idOrUserId),
     );
   }, []);
 
@@ -131,18 +115,19 @@ export const useRealtimeCommuters = (): UseRealtimeCommutersReturn => {
           schema: 'public',
           table: 'commuter_locations',
         },
-        () => {
+        (_payload) => {
+          console.log('Commuter location update:', _payload);
+          // Full refetch — realtime UPDATEs only give us the location row,
+          // we need profile data (name, colors) too anyway.
           fetchCommuters();
         }
       )
       .subscribe();
 
-    // 15s poll (was 10s) — only when tab is visible
+    // ── Polling safety net (10s) ─────────────────────────────────────────────
     pollingIntervalRef.current = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        fetchCommuters();
-      }
-    }, 15_000);
+      fetchCommuters();
+    }, 10_000);
 
     return () => {
       supabase.removeChannel(channel);

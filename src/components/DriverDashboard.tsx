@@ -56,7 +56,7 @@ export const DriverDashboard: React.FC = () => {
   } = useDriverLocation();
   const { vehicles, removeVehicleOptimistic, refetch: refetchVehicles } = useRealtimeVehicles();
   const { commuters, refetch: refetchCommuters } = useRealtimeCommuters();
-  const pins = usePinMessages();
+  const pins = usePinMessages('driver');
 
   const [vehicle, setVehicle] = useState<DriverVehicle | null>(null);
   const [registering, setRegistering] = useState(false);
@@ -91,8 +91,7 @@ export const DriverDashboard: React.FC = () => {
     })();
 
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  }, [user, isTracking]);
 
   // ── Optimistically keep latestPosRef up to date from realtime vehicles list
   useEffect(() => {
@@ -205,17 +204,6 @@ export const DriverDashboard: React.FC = () => {
       c.destination.toLowerCase().includes(vehicle.destination.toLowerCase()),
     );
   }, [commuters, vehicle?.destination]);
-
-  // Keep open commuter detail card in sync with realtime location updates
-  useEffect(() => {
-    if (!selectedCommuter) return;
-    const fresh = filteredCommuters.find((c) => c.id === selectedCommuter.id);
-    if (fresh) {
-      setSelectedCommuter(fresh);
-    } else {
-      setSelectedCommuter(null);
-    }
-  }, [filteredCommuters, selectedCommuter?.id]);
 
   // ── Commuter tap → open detail drawer + pan-to-safe-center ─────────────────
   const handleCommuterSelect = useCallback((c: Commuter | null) => {

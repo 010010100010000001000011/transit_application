@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -21,75 +21,50 @@ export interface PinResponse {
   created_at: string;
 }
 
-/**
- * Pin messages: driver broadcasts to commuters on the same route;
- * commuter responds yes/no; driver sees interest counts in realtime.
- *
- * Call with no args — role comes from AuthContext.
- */
 export const usePinMessages = () => {
   const { user, role } = useAuth();
   const [incomingPins, setIncomingPins] = useState<PinMessage[]>([]);
   const [myPins, setMyPins] = useState<PinMessage[]>([]);
   const [responses, setResponses] = useState<PinResponse[]>([]);
   const [respondedPinIds, setRespondedPinIds] = useState<Set<string>>(new Set());
-  const destinationRef = useRef<string | undefined>(undefined);
-  const pollRef = useRef<number | null>(null);
 
-  const fetchIncomingPins = useCallback(
-    async (commuterDestination?: string) => {
-      if (!user || role !== 'commuter') return;
+  const fetchIncomingPins = useCallback(async (commuterDestination?: string) => {
+    if (!user || role !== 'commuter') return;
 
-      if (commuterDestination !== undefined) {
-        destinationRef.current = commuterDestination;
-      }
-      const dest = destinationRef.current;
+    const { data, error } = await supabase
+      .from('pin_messages')
+      .select('*')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
 
-      const { data, error } = await supabase
-        .from('pin_messages')
+    if (error) {
+      console.error('Error fetching pin messages:', error);
+      return;
+    }
+
+    // Filter by commuter's destination client-side
+    const filtered = commuterDestination
+      ? (data as PinMessage[]).filter(
+          (p) => p.destination.toLowerCase() === commuterDestination.toLowerCase()
+        )
+      : [];
+
+    setIncomingPins(filtered);
+
+    // Fetch which ones the commuter already responded to
+    if (filtered.length > 0) {
+      const pinIds = filtered.map((p) => p.id);
+      const { data: resData } = await supabase
+        .from('pin_responses')
         .select('*')
-        .eq('is_active', true)
-        .order('created_at', { ascending: false })
-        .limit(20);
+        .eq('commuter_id', user.id)
+        .in('pin_message_id', pinIds);
 
-      if (error) {
-        console.error('[pins] fetchIncoming error', error);
-        return;
+      if (resData) {
+        setRespondedPinIds(new Set(resData.map((r: PinResponse) => r.pin_message_id)));
       }
-
-      const all = (data || []) as PinMessage[];
-
-      // If commuter has a destination, prefer matching pins; still show others
-      // so messages are never silently dropped when destinations differ slightly.
-      const filtered =
-        dest && dest.trim() && dest !== 'Any'
-          ? [
-              ...all.filter(
-                (p) => p.destination.toLowerCase().trim() === dest.toLowerCase().trim()
-              ),
-              ...all.filter(
-                (p) => p.destination.toLowerCase().trim() !== dest.toLowerCase().trim()
-              ),
-            ]
-          : all;
-
-      setIncomingPins(filtered);
-
-      if (filtered.length > 0) {
-        const pinIds = filtered.map((p) => p.id);
-        const { data: resData } = await supabase
-          .from('pin_responses')
-          .select('*')
-          .eq('commuter_id', user.id)
-          .in('pin_message_id', pinIds);
-
-        if (resData) {
-          setRespondedPinIds(new Set(resData.map((r: PinResponse) => r.pin_message_id)));
-        }
-      }
-    },
-    [user, role]
-  );
+    }
+  }, [user, role]);
 
   const fetchMyPins = useCallback(async () => {
     if (!user || role !== 'driver') return;
@@ -100,15 +75,16 @@ export const usePinMessages = () => {
       .eq('driver_id', user.id)
       .eq('is_active', true)
       .order('created_at', { ascending: false })
-      .limit(10);
+      .limit(5);
 
     if (error) {
-      console.error('[pins] fetchMyPins error', error);
+      console.error('Error fetching my pins:', error);
       return;
     }
 
-    setMyPins((data || []) as PinMessage[]);
+    setMyPins(data as PinMessage[]);
 
+    // Fetch responses to my pins
     if (data && data.length > 0) {
       const pinIds = data.map((p: PinMessage) => p.id);
       const { data: resData } = await supabase
@@ -118,36 +94,23 @@ export const usePinMessages = () => {
 
       if (resData) {
         setResponses(resData as PinResponse[]);
-      } else {
-        setResponses([]);
       }
-    } else {
-      setResponses([]);
     }
   }, [user, role]);
 
-  const sendPin = async (
-    destination: string,
-    message: string,
-    lat: number,
-    lng: number
-  ) => {
+  const sendPin = async (destination: string, message: string, lat: number, lng: number) => {
     if (!user) return { error: new Error('Not authenticated') };
-    if (!destination?.trim()) {
-      return { error: new Error('Set a destination before sending a pin') };
-    }
 
     const { error } = await supabase.from('pin_messages').insert({
       driver_id: user.id,
-      destination: destination.trim(),
-      message: message.trim() || `Heading to ${destination}?`,
+      destination,
+      message,
       driver_lat: lat,
       driver_lng: lng,
-      is_active: true,
     });
 
     if (!error) {
-      await fetchMyPins();
+      fetchMyPins();
     }
 
     return { error };
@@ -164,7 +127,6 @@ export const usePinMessages = () => {
 
     if (!error) {
       setRespondedPinIds((prev) => new Set([...prev, pinMessageId]));
-      // Keep "yes" pins visible briefly so user sees confirmation; remove "no"
       if (response === 'no') {
         setIncomingPins((prev) => prev.filter((p) => p.id !== pinMessageId));
       }
@@ -176,19 +138,20 @@ export const usePinMessages = () => {
   const deactivatePin = async (pinId: string) => {
     if (!user) return;
 
-    await supabase.from('pin_messages').update({ is_active: false }).eq('id', pinId);
+    await supabase
+      .from('pin_messages')
+      .update({ is_active: false })
+      .eq('id', pinId);
+
     setMyPins((prev) => prev.filter((p) => p.id !== pinId));
   };
 
-  // Realtime + light polling (15s) so interest counts stay fresh without hammering
+  // Realtime subscriptions
   useEffect(() => {
-    if (!user || !role) return;
-
-    if (role === 'commuter') fetchIncomingPins();
-    if (role === 'driver') fetchMyPins();
+    if (!user) return;
 
     const pinChannel = supabase
-      .channel(`pin-messages-${user.id}`)
+      .channel('pin-messages-realtime')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'pin_messages' },
@@ -200,30 +163,19 @@ export const usePinMessages = () => {
       .subscribe();
 
     const responseChannel = supabase
-      .channel(`pin-responses-${user.id}`)
+      .channel('pin-responses-realtime')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'pin_responses' },
+        { event: 'INSERT', schema: 'public', table: 'pin_responses' },
         () => {
           if (role === 'driver') fetchMyPins();
-          if (role === 'commuter') fetchIncomingPins();
         }
       )
       .subscribe();
 
-    pollRef.current = window.setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      if (role === 'commuter') fetchIncomingPins();
-      if (role === 'driver') fetchMyPins();
-    }, 15_000);
-
     return () => {
       supabase.removeChannel(pinChannel);
       supabase.removeChannel(responseChannel);
-      if (pollRef.current !== null) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
     };
   }, [user, role, fetchIncomingPins, fetchMyPins]);
 

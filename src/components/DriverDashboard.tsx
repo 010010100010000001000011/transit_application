@@ -206,6 +206,17 @@ export const DriverDashboard: React.FC = () => {
     );
   }, [commuters, vehicle?.destination]);
 
+  // Keep open commuter detail card in sync with realtime location updates
+  useEffect(() => {
+    if (!selectedCommuter) return;
+    const fresh = filteredCommuters.find((c) => c.id === selectedCommuter.id);
+    if (fresh) {
+      setSelectedCommuter(fresh);
+    } else {
+      setSelectedCommuter(null);
+    }
+  }, [filteredCommuters, selectedCommuter?.id]);
+
   // ── Commuter tap → open detail drawer + pan-to-safe-center ─────────────────
   const handleCommuterSelect = useCallback((c: Commuter | null) => {
     setSelectedCommuter(c);

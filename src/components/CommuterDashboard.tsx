@@ -265,6 +265,29 @@ export const CommuterDashboard: React.FC = () => {
     );
   }, [vehicles, destination]);
 
+  // Keep open vehicle detail card in sync with realtime seat / location updates
+  useEffect(() => {
+    if (!selectedVehicle) return;
+    const fresh = vehicles.find((v) => v.id === selectedVehicle.id);
+    if (fresh) {
+      setSelectedVehicle(fresh);
+    } else {
+      // Vehicle went offline or left the filtered list
+      setSelectedVehicle(null);
+    }
+  }, [vehicles, selectedVehicle?.id]);
+
+  // Keep open commuter detail card in sync with realtime location updates
+  useEffect(() => {
+    if (!selectedCommuter) return;
+    const fresh = commuters.find((c) => c.id === selectedCommuter.id);
+    if (fresh) {
+      setSelectedCommuter(fresh as CommuterWithAppearance);
+    } else {
+      setSelectedCommuter(null);
+    }
+  }, [commuters, selectedCommuter?.id]);
+
   // ── Vehicle tap → open detail drawer + pan-to-safe-center ──────────────────
   const handleVehicleSelect = useCallback((vehicle: Vehicle | null) => {
     setSelectedVehicle(vehicle);
